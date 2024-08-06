@@ -7,6 +7,11 @@ import re
 import sys
 from typing import List, Dict
 
+import concurrent.futures
+from typing import List, Dict
+import http.client
+import json
+
 import httpx
 import toml
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -336,38 +341,28 @@ class FileIOHelper:
 
 
 class WebPageHelper:
-    """Helper class to process web pages.
+    """Helper class to process web pages."""
 
-    Acknowledgement: Part of the code is adapted from https://github.com/stanford-oval/WikiChat project.
-    """
-
-    def __init__(self, min_char_count: int = 150, snippet_chunk_size: int = 1000, max_thread_num: int = 10):
+    def __init__(self, min_char_count: int = 150, snippet_chunk_size: int = 1000, max_thread_num: int = 10,
+                 rapid_api_key: str = os.environ.get("RAPIDAPI_KEY")):
         """
         Args:
             min_char_count: Minimum character count for the article to be considered valid.
             snippet_chunk_size: Maximum character count for each snippet.
-            max_thread_num: Maximum number of threads to use for concurrent requests (e.g., downloading webpages).
+            max_thread_num: Maximum number of threads to use for concurrent requests.
+            rapid_api_key: API key for RapidAPI (ScrapingBee service).
         """
         self.httpx_client = httpx.Client(verify=False)
         self.min_char_count = min_char_count
         self.max_thread_num = max_thread_num
+        self.rapid_api_key = rapid_api_key
         self.text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=snippet_chunk_size,
             chunk_overlap=0,
             length_function=len,
             is_separator_regex=False,
             separators=[
-                "\n\n",
-                "\n",
-                ".",
-                "\uff0e",  # Fullwidth full stop
-                "\u3002",  # Ideographic full stop
-                ",",
-                "\uff0c",  # Fullwidth comma
-                "\u3001",  # Ideographic comma
-                " ",
-                "\u200B",  # Zero-width space
-                "",
+                "\n\n", "\n", ".", "\uff0e", "\u3002", ",", "\uff0c", "\u3001", " ", "\u200B", "",
             ],
         )
 
@@ -379,6 +374,27 @@ class WebPageHelper:
             return res.content
         except httpx.HTTPError as exc:
             print(f"Error while requesting {exc.request.url!r} - {exc!r}")
+            print("Attempting to use RapidAPI fallback...")
+            return self.download_webpage_rapidapi(url)
+        except Exception as e:
+            print(f"Unexpected error: {e}")
+            print("Attempting to use RapidAPI fallback...")
+            return self.download_webpage_rapidapi(url)
+
+    def download_webpage_rapidapi(self, url: str):
+        try:
+            conn = http.client.HTTPSConnection("scrapingbee.p.rapidapi.com")
+            headers = {
+                'x-rapidapi-key': self.rapid_api_key,
+                'x-rapidapi-host': "scrapingbee.p.rapidapi.com"
+            }
+            query_params = f"?url={url}&render_js=true"
+            conn.request("GET", query_params, headers=headers)
+            res = conn.getresponse()
+            data = res.read()
+            return data
+        except Exception as e:
+            print(f"RapidAPI fallback failed for {url}: {e}")
             return None
 
     def urls_to_articles(self, urls: List[str]) -> Dict:

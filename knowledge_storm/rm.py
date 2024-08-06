@@ -1,7 +1,8 @@
 import logging
 import os
 from typing import Callable, Union, List
-
+import http.client
+import json
 import dspy
 import pandas as pd
 import requests
@@ -11,8 +12,79 @@ from langchain_qdrant import Qdrant
 from qdrant_client import QdrantClient, models
 from tqdm import tqdm
 
+
 from .utils import WebPageHelper
 
+
+
+class SerpySearch(dspy.Retrieve):
+    def __init__(self, rapidapi_key=None, k=3, is_valid_source=None):
+        super().__init__(k=k)
+        if not rapidapi_key and not os.environ.get("RAPIDAPI_KEY"):
+            raise RuntimeError("You must supply rapidapi_key or set environment variable RAPIDAPI_KEY")
+        elif rapidapi_key:
+            self.rapidapi_key = rapidapi_key
+        else:
+            self.rapidapi_key = os.environ["RAPIDAPI_KEY"]
+        
+        self.usage = 0
+        self.conn = http.client.HTTPSConnection("seo-api.p.rapidapi.com")
+        self.headers = {
+            'x-rapidapi-key': self.rapidapi_key,
+            'x-rapidapi-host': "seo-api.p.rapidapi.com",
+            'X-Proxy-Location': "EU",
+            'X-User-Agent': "desktop"
+        }
+        
+        # If not None, is_valid_source shall be a function that takes a URL and returns a boolean.
+        if is_valid_source:
+            self.is_valid_source = is_valid_source
+        else:
+            self.is_valid_source = lambda x: True
+
+    def get_usage_and_reset(self):
+        usage = self.usage
+        self.usage = 0
+        return {'SerpySearch': usage}
+
+    def forward(self, query_or_queries: Union[str, List[str]], exclude_urls: List[str] = []):
+        """Search with SerpySearch API for self.k top passages for query or queries
+
+        Args:
+            query_or_queries (Union[str, List[str]]): The query or queries to search for.
+            exclude_urls (List[str]): A list of urls to exclude from the search results.
+
+        Returns:
+            a list of Dicts, each dict has keys of 'description', 'snippets' (list of strings), 'title', 'url'
+        """
+        queries = [query_or_queries] if isinstance(query_or_queries, str) else query_or_queries
+        self.usage += len(queries)
+        collected_results = []
+
+        for query in queries:
+            try:
+                encoded_query = query.replace(' ', '+')
+                self.conn.request("GET", f"/v1/search/q={encoded_query}", headers=self.headers)
+                res = self.conn.getresponse()
+                data = json.loads(res.read().decode("utf-8"))
+
+                for result in data.get('results', []):
+                    if self.is_valid_source(result['link']) and result['link'] not in exclude_urls:
+                        collected_results.append({
+                            'description': result['description'],
+                            'snippets': [result['description']],  # Using description as snippet
+                            'title': result['title'],
+                            'url': result['link']
+                        })
+                        
+                        if len(collected_results) >= self.k:
+                            break
+
+            except Exception as e:
+                logging.error(f'Error occurs when searching query {query}: {e}')
+
+        return collected_results[:self.k]
+    
 
 class YouRM(dspy.Retrieve):
     def __init__(self, ydc_api_key=None, k=3, is_valid_source: Callable = None):
